@@ -1,7 +1,7 @@
 # ZipStream
 Streams a list of files into a compression-configurable .zip file with no lengthy pre-building step needed.
 
-Looking at you, Google Drive and Sync.
+Looking at you, Google Drive, Sync, and similar sites.
 
 Due to this, it also uses no extra server hard drive space to pre-build. It can also optionally compress with deflate, bzip2, or lzma compression algorithms, though I couldn't find any decompression software supporting it to test the latter.
 
