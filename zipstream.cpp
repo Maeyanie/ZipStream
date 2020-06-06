@@ -13,7 +13,7 @@ using namespace std;
 //#define USESTORE // Works
 //#define USEDEFLATE // Works
 //#define USEBZIP2 // Works
-//#define USELZMA // Maybe works? No unzip I have handy seems to support it.
+//#define USELZMA // I don't think this one works. 7zip doesn't like it.
 
 #if defined(USESTORE)
 	// None needed.
@@ -58,6 +58,12 @@ struct __attribute__((packed)) DataDescriptor {
 	uint32_t csize;
 	uint32_t usize;
 };
+struct __attribute__((packed)) Zip64DataDescriptor {
+	uint32_t signature;
+	uint32_t crc;
+	uint64_t csize;
+	uint64_t usize;
+};
 struct __attribute__((packed)) DirectoryHeader {
 	uint32_t signature;
 	uint16_t cversion;
@@ -77,6 +83,38 @@ struct __attribute__((packed)) DirectoryHeader {
 	uint32_t eattribs;
 	uint32_t offset;
 };
+struct __attribute__((packed)) Zip64InfoShort {
+	uint16_t signature;
+	uint16_t size;
+	uint64_t usize;
+	uint64_t csize;
+};
+struct __attribute__((packed)) Zip64Info {
+	uint16_t signature;
+	uint16_t size;
+	uint64_t usize;
+	uint64_t csize;
+	uint64_t offset;
+	uint32_t disk;
+};
+struct __attribute__((packed)) Zip64DirectoryRecord {
+	uint32_t signature;
+	uint64_t drsize;
+	uint16_t cversion;
+	uint16_t eversion;
+	uint32_t disknum;
+	uint32_t diskdir;
+	uint64_t diskcount;
+	uint64_t direntries;
+	uint64_t dirsize;
+	uint64_t diroffset;
+};
+struct __attribute__((packed)) Zip64DirectoryLocator {
+	uint32_t signature;
+	uint32_t dirdisk;
+	uint64_t diroffset;
+	uint32_t diskcount;
+};
 struct __attribute__((packed)) DirectoryEnd {
 	uint32_t signature;
 	uint16_t disknum;
@@ -87,9 +125,11 @@ struct __attribute__((packed)) DirectoryEnd {
 	uint32_t diroffset;
 	uint16_t zipcommentlen;
 };
+
 struct ZippedFile {
 	const char* name;
 	LocalHeader header;
+	size_t csize, usize;
 
 	ZippedFile(const char* n) {
 		name = n;
@@ -120,32 +160,41 @@ ZippedFile* do_file(const char* name) {
 	LocalHeader header;
 	header.signature = 0x04034b50;
 	#if defined(USESTORE)
-	header.version = 10; // 10 = default, 20 = deflate, 21 = deflate64, 45 = zip64, 46 = bzip2, 63 = lzma
-	header.flags = 0b1000; // bit 1&2 describe compression, others unimportant
-	header.method = 0; // 0 = store, 8 = deflate, 9 = deflate64, 12=bzip2, 14 = lzma
+		header.version = 45; // 10 = default, 20 = deflate, 21 = deflate64, 45 = zip64, 46 = bzip2, 63 = lzma
+		header.flags = 0b1000; // bit 1&2 describe compression, others unimportant
+		header.method = 0; // 0 = store, 8 = deflate, 9 = deflate64, 12=bzip2, 14 = lzma
 	#elif defined(USEDEFLATE)
-	header.version = 20;
-	header.flags = 0b1000; // 00x = normal compression
-	header.method = 8;
+		header.version = 45;
+		header.flags = 0b1000; // 00x = normal compression
+		header.method = 8;
 	#elif defined(USEBZIP2)
-	header.version = 46;
-	header.flags = 0b1000; // bit 1&2 unused
-	header.method = 12;
+		header.version = 46;
+		header.flags = 0b1000; // bit 1&2 unused
+		header.method = 12;
 	#elif defined(USELZMA)
-	header.version = 63;
-	header.flags = 0b1000; // 1x = uses EOS marker to indicate end-of-stream
-	header.method = 14;
+		header.version = 63;
+		header.flags = 0b1000; // 1x = uses EOS marker to indicate end-of-stream
+		header.method = 14;
 	#endif
 	header.mtime = dostime(st.st_mtime);
 	header.mdate = dosdate(st.st_mtime);
 	header.crc = 0;
 	header.csize = 0;
-	header.usize = st.st_size; // The spec says this should be left 0, but actual unzip software failed if it was.
+	header.usize = 0; // The spec says this should be left 0. Actual software varies.
 	header.fnamelen = strlen(name);
-	header.extralen = 0;
+	header.extralen = sizeof(Zip64InfoShort);
 
 	fwrite(&header, 1, sizeof(header), stdout);
 	fwrite(name, 1, strlen(name), stdout);
+	
+	Zip64InfoShort zi;
+	zi.signature = 0x0001;
+	zi.size = sizeof(Zip64InfoShort)-4;
+	zi.usize = 0;
+	zi.csize = 0;
+
+	fwrite(&zi, 1, sizeof(Zip64InfoShort), stdout);
+
 
 
 	MHASH mh = mhash_init(MHASH_CRC32B);
@@ -285,17 +334,19 @@ ZippedFile* do_file(const char* name) {
 	#endif
 
 	mhash_deinit(mh, &header.crc);
-	header.csize = total;
+	header.usize = st.st_size < 0xFFFFFFFF ? st.st_size : 0xFFFFFFFF;
+	header.csize = total < 0xFFFFFFFF ? total : 0xFFFFFFFF;
 
 
-	DataDescriptor dd;
+	Zip64DataDescriptor dd;
 	dd.signature = 0x08074b50;
 	dd.crc = header.crc;
 	dd.csize = total;
 	dd.usize = st.st_size;
-
 	fwrite(&dd, sizeof(dd), 1, stdout);
 
+	file->csize = total;
+	file->usize = st.st_size;
 	file->header = header;
 	return file;
 }
@@ -320,28 +371,73 @@ int main(int argc, char* argv[]) {
 		dh.signature = 0x02014b50;
 		dh.cversion = 3; // UNIX
 		memcpy(&(dh.eversion), &(lh->version), sizeof(LocalHeader)-4);
+		dh.extralen = sizeof(Zip64Info);
 		dh.commentlen = 0;
 		dh.disknum = 0;
 		dh.iattribs = 0;
 		dh.eattribs = 0;
-		dh.offset = offset;
+		dh.offset = offset < 0xFFFFFFFF ? offset : 0xFFFFFFFF;
 
 		fwrite(&dh, 1, sizeof(dh), stdout);
 		fwrite((*i)->name, 1, dh.fnamelen, stdout);
-		offset += sizeof(LocalHeader) + dh.fnamelen + dh.csize + sizeof(DataDescriptor);
-		dirsize += sizeof(DirectoryHeader) + dh.fnamelen;
+		
+		Zip64Info zi;
+		zi.signature = 0x0001;
+		zi.size = sizeof(zi)-4;
+		zi.usize = (*i)->usize;
+		zi.csize = (*i)->csize;
+		zi.offset = offset;
+		zi.disk = 0;
+
+		fwrite(&zi, 1, sizeof(Zip64Info), stdout);
+
+		offset += sizeof(LocalHeader) + dh.fnamelen + sizeof(Zip64InfoShort) + dh.csize + sizeof(Zip64DataDescriptor);
+		dirsize += sizeof(DirectoryHeader) + dh.fnamelen + sizeof(Zip64Info);
+		
+		delete *i;
 	}
+
+	Zip64DirectoryRecord dr;
+	dr.signature = 0x06064b50;
+	dr.drsize = sizeof(dr) - 12;
+	dr.cversion = 3; // Spec suggests this should be 3 = unix, 7Zip sets it matching eversion.
+	#if defined(USESTORE) || defined(USEDEFLATE)
+		dr.eversion = 45; // 45 = zip64, 46 = bzip2, 63 = lzma
+	#elif defined(USEBZIP2)
+		dr.eversion = 46;
+	#elif defined(USELZMA)
+		dr.eversion = 63;
+	#endif
+	dr.disknum = 0;
+	dr.diskdir = 0;
+	dr.diskcount = argc-1;
+	dr.direntries = argc-1;
+	dr.dirsize = dirsize;
+	dr.diroffset = offset;
+
+	fwrite(&dr, 1, sizeof(dr), stdout);
+	
+	
+	Zip64DirectoryLocator dl;
+	dl.signature = 0x07064b50;
+	dl.dirdisk = 0;
+	dl.diroffset = offset+dirsize;
+	dl.diskcount = 1;
+	
+	fwrite(&dl, 1, sizeof(dl), stdout);
+
 
 	DirectoryEnd de;
 	de.signature = 0x06054b50;
 	de.disknum = 0;
 	de.diskdir = 0;
-	de.diskcount = 0;
+	de.diskcount = argc-1;
 	de.direntries = argc-1;
-	de.dirsize = dirsize;
-	de.diroffset = offset;
+	de.dirsize = dirsize < 0xFFFFFFFF ? dirsize : 0xFFFFFFFF;
+	de.diroffset = offset < 0xFFFFFFFF ? offset : 0xFFFFFFFF;
 	de.zipcommentlen = 0;
 	fwrite(&de, 1, sizeof(de), stdout);
+
 
 	fflush(stdout);
 	fclose(stdout);
