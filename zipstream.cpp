@@ -390,14 +390,17 @@ int main(int argc, char* argv[]) {
 		zi.csize = (*i)->csize;
 		zi.offset = offset;
 		
-		if (dh.offset == 0xFFFFFFFF) zi.size = 24;
-		else if (dh.csize == 0xFFFFFFFF) zi.size = 16;
-		else if (dh.usize == 0xFFFFFFFF) zi.size = 8;
+		if (dh.usize == 0xFFFFFFFF) zi.size += 8;
+		if (dh.csize == 0xFFFFFFFF) zi.size += 8;
+		if (dh.offset == 0xFFFFFFFF) zi.size += 8;
 		dh.extralen = zi.size + 4;
 
 		fwrite(&dh, 1, sizeof(dh), stdout);
 		fwrite((*i)->name, 1, dh.fnamelen, stdout);
-		fwrite(&zi, 1, dh.extralen, stdout);
+		fwrite(&zi, 1, 4, stdout);
+		if (dh.usize == 0xFFFFFFFF) fwrite(&zi.usize, 1, 8, stdout);
+		if (dh.csize == 0xFFFFFFFF) fwrite(&zi.csize, 1, 8, stdout);
+		if (dh.offset == 0xFFFFFFFF) fwrite(&zi.offset, 1, 8, stdout);
 
 		offset += sizeof(LocalHeader) + dh.fnamelen + 4 + dh.csize + sizeof(Zip64DataDescriptor);
 		dirsize += sizeof(DirectoryHeader) + dh.fnamelen + dh.extralen;
