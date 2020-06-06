@@ -13,7 +13,7 @@ using namespace std;
 //#define USESTORE // Works
 //#define USEDEFLATE // Works
 //#define USEBZIP2 // Works
-//#define USELZMA // I don't think this one works. 7zip doesn't like it.
+//#define USELZMA // Works, at least with 7Zip
 
 #if defined(USESTORE)
 	// None needed.
@@ -167,7 +167,7 @@ ZippedFile* do_file(const char* name) {
 		header.method = 12;
 	#elif defined(USELZMA)
 		header.version = 63;
-		header.flags = 0b1000; // 1x = uses EOS marker to indicate end-of-stream
+		header.flags = 0b1010; // 1x = uses EOS marker to indicate end-of-stream
 		header.method = 14;
 	#endif
 	header.mtime = dostime(st.st_mtime);
@@ -275,6 +275,7 @@ ZippedFile* do_file(const char* name) {
 	#elif defined(USELZMA)
 	{
 		int ret;
+		bool firstblock = true;
 		lzma_action action = LZMA_RUN;
 
 		lzma_options_lzma opt;
@@ -284,7 +285,7 @@ ZippedFile* do_file(const char* name) {
 		lzma_stream zp = LZMA_STREAM_INIT;
 		ret = lzma_alone_encoder(&zp, &opt);
 		if (ret != LZMA_OK) {
-			fprintf(stderr, "lzma_stream_encoder returned %d\n", ret);
+			fprintf(stderr, "lzma_alone_encoder returned %d\n", ret);
 			switch (ret) {
 			case LZMA_MEM_ERROR:
 				fprintf(stderr, "LZMA_MEM_ERROR\n");
@@ -316,8 +317,21 @@ ZippedFile* do_file(const char* name) {
 				assert(ret == LZMA_OK || ret == LZMA_STREAM_END);
 				len = BUFFERSIZE - zp.avail_out;
 
-				fwrite(outbuf, 1, len, stdout);
-				total += len;
+				if (firstblock) {
+					// liblzma: 5-byte params, 8-byte length header
+					// 5D 00 00 80 00 | FF FF FF FF FF FF FF FF | 00 1E 0F CA
+					// 7zip: 4-byte signature, 5-byte params
+					// 14 00 05 00 | 5D 00 10 00 00 | 00 1E 0F CA
+					firstblock = false;
+					const uint32_t signature = 0x00050014;
+					fwrite(&signature, 1, 4, stdout);
+					fwrite(outbuf, 1, 5, stdout);
+					fwrite(outbuf+13, 1, len-13, stdout);
+					total += len-4;
+				} else {
+					fwrite(outbuf, 1, len, stdout);
+					total += len;
+				}
 			} while (zp.avail_out == 0 && ret != LZMA_STREAM_END);
 		} while (action == LZMA_RUN);
 
