@@ -83,12 +83,6 @@ struct __attribute__((packed)) DirectoryHeader {
 	uint32_t eattribs;
 	uint32_t offset;
 };
-struct __attribute__((packed)) Zip64InfoShort {
-	uint16_t signature;
-	uint16_t size;
-	uint64_t usize;
-	uint64_t csize;
-};
 struct __attribute__((packed)) Zip64Info {
 	uint16_t signature;
 	uint16_t size;
@@ -182,18 +176,16 @@ ZippedFile* do_file(const char* name) {
 	header.csize = 0;
 	header.usize = 0; // The spec says this should be left 0. Actual software varies.
 	header.fnamelen = strlen(name);
-	header.extralen = sizeof(Zip64InfoShort);
+	header.extralen = 4;
 
 	fwrite(&header, 1, sizeof(header), stdout);
 	fwrite(name, 1, strlen(name), stdout);
 	
-	Zip64InfoShort zi;
+	Zip64Info zi;
 	zi.signature = 0x0001;
-	zi.size = sizeof(Zip64InfoShort)-4;
-	zi.usize = 0;
-	zi.csize = 0;
+	zi.size = 0;
 
-	fwrite(&zi, 1, sizeof(Zip64InfoShort), stdout);
+	fwrite(&zi, 1, 4, stdout);
 
 
 
@@ -371,28 +363,30 @@ int main(int argc, char* argv[]) {
 		dh.signature = 0x02014b50;
 		dh.cversion = 3; // UNIX
 		memcpy(&(dh.eversion), &(lh->version), sizeof(LocalHeader)-4);
-		dh.extralen = sizeof(Zip64Info);
 		dh.commentlen = 0;
 		dh.disknum = 0;
 		dh.iattribs = 0;
 		dh.eattribs = 0;
 		dh.offset = offset < 0xFFFFFFFF ? offset : 0xFFFFFFFF;
-
-		fwrite(&dh, 1, sizeof(dh), stdout);
-		fwrite((*i)->name, 1, dh.fnamelen, stdout);
 		
 		Zip64Info zi;
 		zi.signature = 0x0001;
-		zi.size = sizeof(zi)-4;
+		zi.size = 0;
 		zi.usize = (*i)->usize;
 		zi.csize = (*i)->csize;
 		zi.offset = offset;
-		zi.disk = 0;
+		
+		if (dh.offset == 0xFFFFFFFF) zi.size = 24;
+		else if (dh.csize == 0xFFFFFFFF) zi.size = 16;
+		else if (dh.usize == 0xFFFFFFFF) zi.size = 8;
+		dh.extralen = zi.size + 4;
 
-		fwrite(&zi, 1, sizeof(Zip64Info), stdout);
+		fwrite(&dh, 1, sizeof(dh), stdout);
+		fwrite((*i)->name, 1, dh.fnamelen, stdout);
+		fwrite(&zi, 1, dh.extralen, stdout);
 
-		offset += sizeof(LocalHeader) + dh.fnamelen + sizeof(Zip64InfoShort) + dh.csize + sizeof(Zip64DataDescriptor);
-		dirsize += sizeof(DirectoryHeader) + dh.fnamelen + sizeof(Zip64Info);
+		offset += sizeof(LocalHeader) + dh.fnamelen + 4 + dh.csize + sizeof(Zip64DataDescriptor);
+		dirsize += sizeof(DirectoryHeader) + dh.fnamelen + dh.extralen;
 		
 		delete *i;
 	}
